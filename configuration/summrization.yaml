@@ -1,0 +1,43 @@
+ModelArguments:
+    model_name_or_path: 'facebook/bart-base'
+    config_name: 'facebook/bart-base'
+    tokenizer_name: 'facebook/bart-base'
+    cache_dir: 
+    use_fast_tokenizer: True
+    model_revision: 'main'
+    use_auth_token: False
+    resize_position_embeddings:   
+---
+DataTrainingArguments:
+    lang: 
+    dataset_name: 'cnn_dailymail'
+    dataset_config_name: '3.0.0'
+    text_column: 
+    summary_column: 
+    train_file: 
+    validation_file: 
+    test_file: 
+    overwrite_cache: False
+    preprocessing_num_workers: 
+    max_source_length: 1024
+    max_target_length: 128
+    val_max_target_length: 128
+    pad_to_max_length: False
+    max_train_samples: 
+    max_eval_samples: 
+    max_predict_samples: 
+    num_beams: 
+    ignore_pad_token_for_loss: True
+    source_prefix: 'summarize: '
+    forced_bos_token: 
+---
+IPUSeq2SeqTrainingArguments:
+    output_dir: '/tmp/tst-summarization'
+    ipu_config_name: 'Graphcore/bart-base-ipu'
+    do_train: True
+    do_eval: True
+    do_predict: False
+    per_device_train_batch_size: 2
+    per_device_eval_batch_size: 2
+    pod_type: 'pod16'
+    overwrite_output_dir: True
