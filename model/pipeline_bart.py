@@ -1,7 +1,63 @@
+import random
+from typing import Optional, Tuple
+
+import torch
+import torch.nn as nn
+
+import poptorch
 from .modeling_bart import BartModel
 import transformers
+from optimum.utils import logging
+from .generation_utils import IPUGenerationMixin
+from .modeling_utils import (
+    GenerationMethodsMixin,
+    PipelineMixin,
+    SerializedLinear,
+    SharedEmbedding,
+    get_layer_ipu,
+    recomputation_checkpoint,
+    register,
+)
 
-class PipelinedBartForPretraining(transformers.BartPretrainedModel):
+class _BartModelWithSharedEmbedding(BartModel):
+    d
+
+@register(BartForConditionalGeneration)
+class PipelinedBartForConditionalGeneration(
+    GenerationMethodsMixin, BartForConditionalGeneration, PipelineMixin, IPUGenerationMixin
+):
+    def parallelize(self):
+        """
+        Transform the model to run in an IPU pipeline
+        - Adds pipeline stages to the model
+        - (IF enabled) Replaces the shared embedding with a SerializedEmbedding
+        - Adds recomputation checkpoints
+        
+        Recommended usage:
+        ```
+        model = PipelinedBartForConditionalGeneration(config).parallelize().half()
+        ```
+        """
+        super().parallelize()
+        
+        layer_ipu = get_layer_ipu(self.ipu_config.layers_per_ipu)
+        
+        logger.info("-----------Device Allocation-----------")
+        logger.info("Embedding --> IPU 0")
+        
+        if self.ipu_config.embedding_serialization_factor >1:
+            serialized_lm_head = SerializaedLinear(
+                self.config.d_model,
+                self.model.shared.num_embeddings,
+                self.ipu_config.embedding_serialization_factor,
+                bias=False,
+                mode=poptorch.MatMulSerializationMode.OutputChannels,
+            )
+            serialized_lm_head.load_state_dict(self.lm_head.state_dict())
+            self.lm_head = serialized_lm_head
+            self.tie_weights()
+
+class PipelinedBertForPretraining(transformers.BertPretrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.gather_indices = OnehotGather()
