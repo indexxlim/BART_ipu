@@ -1,3 +1,17 @@
+#  Copyright 2021 The HuggingFace Team. All rights reserved.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
 import random
 from typing import Optional, Tuple
 
@@ -5,11 +19,17 @@ import torch
 import torch.nn as nn
 
 import poptorch
-from .modeling_bart import BartModel, BartAttention, BartEncoder, BartDecoder, BartForConditionalGeneration
-import transformers
 from optimum.utils import logging
-from .generation_utils import IPUGenerationMixin
-from .modeling_utils import (
+from transformers import BartForConditionalGeneration, BartModel
+from transformers.modeling_outputs import (
+    BaseModelOutput,
+    BaseModelOutputWithPastAndCrossAttentions,
+    Seq2SeqModelOutput,
+)
+from transformers.models.bart.modeling_bart import BartAttention, BartDecoder, BartEncoder, shift_tokens_right
+
+from ...generation_utils import IPUGenerationMixin
+from ...modeling_utils import (
     GenerationMethodsMixin,
     PipelineMixin,
     SerializedLinear,
@@ -57,6 +77,7 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
 
 class _BartAttentionWithoutException(BartAttention):
     """The same as BartAttention without the attention mask shape check.
+
     This is needed because the original BartAttention checks that the attention mask shape is [bs, 1, tgt_len, src_len]
     but the pipelined implementation does not expand the mask, it just inserts dimensions, the shape is then
     [bs, 1, 1, src_len], and broadcasting does the rest.
@@ -171,6 +192,7 @@ class _BartAttentionWithoutException(BartAttention):
 
 class _BartEncoderWithCustomExpandMask(BartEncoder):
     """The same as BartEncoder but uses a custom version of _expand_mask.
+
     Check the _expand_mask docstring for more information.
     """
 
@@ -272,6 +294,7 @@ class _BartEncoderWithCustomExpandMask(BartEncoder):
 
 class _BartDecoderWithCustomMakeCausalAndExpandMask(BartDecoder):
     """The same as BartDecoder but uses a custom version of _make_causal_mask and _expand_mask.
+
     Check the _expand_mask docstring for more information.
     """
 
@@ -452,6 +475,7 @@ class _BartModelWithSharedEmbedding(BartModel):
 
     def encoder_and_decoder_embeddings_computation(self, use_shared_embedding: bool):
         """Sets the BartModel shared embedding layer to SharedEmbedding that combines the computation under one layer.
+
         Args:
             use_shared_embedding: whether to use SharedEmbedding or not.
         """
@@ -470,6 +494,7 @@ class _BartModelWithSharedEmbedding(BartModel):
     def change_bart_encoder_and_decoder_classes(self, restore: bool):
         """Changes the encoder and decoder classes to update their forward pass so that they use our custom versions of
         _make_causal_mask and _expand_mask.
+
         Args:
             restore: whether to restore the encoder and decoder to their original version or not.
         """
@@ -479,6 +504,7 @@ class _BartModelWithSharedEmbedding(BartModel):
     def change_bart_attention_class(self, restore: bool):
         """Changes the attention layers to either use the original BartAttention forward or
         BartAttentionWithoutException forward.
+
         Args:
             restore: whether to restore the attention layers to their original version or not.
         """
@@ -597,6 +623,7 @@ class PipelinedBartForConditionalGeneration(
         - Adds pipeline stages to the model
         - (If enabled) Replaces the shared embedding with a SerializedEmbedding
         - Adds recomputation checkpoints
+
         Recommended usage:
         ```
         model = PipelinedBartForConditionalGeneration(config).parallelize().half()
@@ -705,4 +732,3 @@ class PipelinedBartForConditionalGeneration(
         return outputs[:2]
 
     forward = _forward_for_train
-    

@@ -1,1 +1,9 @@
 *.swp
+<<<<<<< HEAD
+=======
+__pycache__
+.ipynb_checkpoints
+None
+wandb
+exe_cache
+>>>>>>> 3eda7da216b32a0bdd5ffdd3b50fa8422e735840
