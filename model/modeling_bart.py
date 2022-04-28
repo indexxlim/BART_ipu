@@ -568,7 +568,7 @@ BART_INPUTS_DOCSTRING = r"""
         decoder_attention_mask (:obj:`torch.LongTensor` of shape :obj:`(batch_size, target_sequence_length)`, `optional`):
             Default behavior: generate a tensor that ignores pad tokens in :obj:`decoder_input_ids`. Causal mask will
             also be used by default.
-            If you want to change padding behavior, you should read :func:`modeling_bart._prepare_decoder_inputs` and
+            If you want to change padding behavior, you should read :func:`_make_causal_mask._prepare_decoder_inputs` and
             modify to your needs. See diagram 1 in `the paper <https://arxiv.org/abs/1910.13461>`__ for more
             information on the default strategy.
         head_mask (:obj:`torch.Tensor` of shape :obj:`(encoder_layers, encoder_attention_heads)`, `optional`):
