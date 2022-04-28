@@ -13,6 +13,7 @@ import numpy as np
 from datasets import load_dataset, load_metric
 
 import torch
+from torch import nn, optim
 import transformers
 from transformers.modeling_utils import PreTrainedModel
 from transformers.trainer_pt_utils import get_parameter_names
@@ -23,6 +24,10 @@ from poptorch import DataLoaderMode, PoplarExecutor
 from poptorch.optim import LAMB, AdamW
 
 from packaging import version
+
+from sum_dataloader import SummaryCollator, get_dataloader, get_train_sampler, ipu_dataloader
+
+
 __version__ = "0.2.4.dev"
 
 def check_min_version(min_version):
@@ -252,40 +257,45 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+
+    from optimum.graphcore.modeling_utils import to_pipelined
+    model = to_pipelined(model, ipu_config, force=False)
+    model.parallelize()
+    if not training_args.fp32:
+        model = model.half()
     
     model.resize_token_embeddings(len(tokenizer))
 
-    if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
-        if isinstance(tokenizer, MBartTokenizer):
-            model.config.decoder_start_token_id = tokenizer.lang_code_to_id[data_args.lang]
-        else:
-            model.config.decoder_start_token_id = tokenizer.convert_tokens_to_ids(data_args.lang)
 
-    if model.config.decoder_start_token_id is None:
-        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
-    if (
-        hasattr(model.config, "max_position_embeddings")
-        and model.config.max_position_embeddings < data_args.max_source_length
-    ):
-        if model_args.resize_position_embeddings is None:
-            logger.warning(
-                f"Increasing the model's number of position embedding vectors from {model.config.max_position_embeddings} "
-                f"to {data_args.max_source_length}."
-            )
-            model.resize_position_embeddings(data_args.max_source_length)
-        elif model_args.resize_position_embeddings:
-            model.resize_position_embeddings(data_args.max_source_length)
-        else:
-            raise ValueError(
-                f"`--max_source_length` is set to {data_args.max_source_length}, but the model only has {model.config.max_position_embeddings}"
-                f" position encodings. Consider either reducing `--max_source_length` to {model.config.max_position_embeddings} or to automatically "
-                "resize the model's position encodings by passing `--resize_position_embeddings`."
-            )
+    if data_args.dataset_name is not None:
+        # Downloading and loading a dataset from the hub.
+        raw_datasets = load_dataset(
+            data_args.dataset_name,
+            data_args.dataset_config_name,
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+    else:
+        data_files = {}
+        if data_args.train_file is not None:
+            data_files["train"] = data_args.train_file
+            extension = data_args.train_file.split(".")[-1]
+        if data_args.validation_file is not None:
+            data_files["validation"] = data_args.validation_file
+            extension = data_args.validation_file.split(".")[-1]
+        if data_args.test_file is not None:
+            data_files["test"] = data_args.test_file
+            extension = data_args.test_file.split(".")[-1]
+        raw_datasets = load_dataset(
+            extension,
+            data_files=data_files,
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
 
-    prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
 
-    # Preprocessing the datasets.
+
     
     
     summarization_name_mapping = {
@@ -353,22 +363,51 @@ def main():
         logger.info("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
         raise
 
-    if isinstance(tokenizer, tuple(MULTILINGUAL_TOKENIZERS)):
-        assert (
-            data_args.lang is not None
-        ), f"{tokenizer.__class__.__name__} is a multilingual tokenizer which requires --lang argument"
+    collator = SummaryCollator(tokenizer, 'cnn_dailymail')
+    dataloader = get_dataloader(raw_datasets["train"], collator)
 
-        tokenizer.src_lang = data_args.lang
-        tokenizer.tgt_lang = data_args.lang
+    ipu_train_dataloader = ipu_dataloader(raw_datasets["train"], tokenizer, ipu_config, training_args, collator, shuffle=False)
+        
+    '''
+    #Training
+    '''
 
-        # For multilingual translation models like mBART-50 and M2M100 we need to force the target language token
-        # as the first generated token. We ask the user to explicitly provide this as --forced_bos_token argument.
-        forced_bos_token_id = (
-            tokenizer.lang_code_to_id[data_args.forced_bos_token] if data_args.forced_bos_token is not None else None
-        )
-        model.config.forced_bos_token_id = forced_bos_token_id
+    optimizer, lr_scheduler = get_optimizer_scheduler(model, ipu_config, training_args, ipu_train_dataloader)
 
-        
-        
-        
+    if optimizer is not None and not isinstance(optimizer, poptorch.optim.Optimizer):
+    #optimizer = self._pytorch_optimizer_to_poptorch(self.optimizer, model, self.model)
+        raise Exception('Error : convert to poptorch optimzier')
+
     opts = ipu_config.to_options()
+    training_model = poptorch.trainingModel(
+        model.train(), options=opts, optimizer=optimizer
+    )
+    training_model = wrap_model(training_model, opts)
+
+    if training_model.isCompiled():
+        pass
+    else:
+        logger.info("Compiling Model...")
+        start_compile = time.perf_counter()
+
+        sample_batch = next(iter(ipu_train_dataloader))
+        
+        if isinstance(sample_batch, tuple):
+            training_model.compile(*dict(a))
+        else:
+            training_model.compile(**dict(a))
+        duration_compilation = time.perf_counter() - start_compile
+        logger.info(f"Compiled/Loaded model in {duration_compilation} secs")
+
+
+
+    for step, inputs in enumerate(ipu_train_dataloader):
+
+        loss_step = training_model(**a)
+        loss += loss_step
+
+        optimizer_was_run = True
+
+        if optimizer_was_run:
+            lr_scheduler.step()
+            training_model.setOptimizer(optimizer)
