@@ -15,13 +15,27 @@ from datasets import load_dataset, load_metric
 import torch
 from torch import nn, optim
 import transformers
+from transformers import (
+    AutoConfig,
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    set_seed,
+)
 from transformers.modeling_utils import PreTrainedModel
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.optimization import get_scheduler
+from transformers.trainer_utils import get_last_checkpoint
+from transformers.utils import check_min_version as tf_check_min_version
+from transformers.utils import is_offline_mode
+from transformers.utils.versions import require_version
 
 import poptorch
 from poptorch import DataLoaderMode, PoplarExecutor
 from poptorch.optim import LAMB, AdamW
+
+from optimum.graphcore import IPUConfig, IPUSeq2SeqTrainer
+from optimum.graphcore import IPUSeq2SeqTrainingArguments as Seq2SeqTrainingArguments
+from optimum.graphcore.modeling_utils import to_pipelined
 
 from packaging import version
 
@@ -177,7 +191,6 @@ def main():
     logger = logging.getLogger(__name__)
 
     # A list of all multilingual tokenizer which require lang attribute.
-    MULTILINGUAL_TOKENIZERS = [MBartTokenizer, MBartTokenizerFast, MBart50Tokenizer, MBart50TokenizerFast]
 
 
 
@@ -257,14 +270,14 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    model.resize_token_embeddings(len(tokenizer))
+   
 
-    from optimum.graphcore.modeling_utils import to_pipelined
     model = to_pipelined(model, ipu_config, force=False)
     model.parallelize()
     if not training_args.fp32:
         model = model.half()
     
-    model.resize_token_embeddings(len(tokenizer))
 
 
 
@@ -383,6 +396,8 @@ def main():
         model.train(), options=opts, optimizer=optimizer
     )
     training_model = wrap_model(training_model, opts)
+    
+    sample_data = next(iter(ipu_train_dataloader))
 
     if training_model.isCompiled():
         pass
@@ -393,17 +408,20 @@ def main():
         sample_batch = next(iter(ipu_train_dataloader))
         
         if isinstance(sample_batch, tuple):
-            training_model.compile(*dict(a))
+            training_model.compile(*dict(sample_data))
         else:
-            training_model.compile(**dict(a))
+            training_model.compile(**dict(sample_data))
         duration_compilation = time.perf_counter() - start_compile
         logger.info(f"Compiled/Loaded model in {duration_compilation} secs")
 
 
 
+    loss = 0
     for step, inputs in enumerate(ipu_train_dataloader):
+        
 
-        loss_step = training_model(**a)
+        loss_step = training_model(**inputs)
+        logger.info(f"loss is {loss_step}")
         loss += loss_step
 
         optimizer_was_run = True
@@ -411,3 +429,6 @@ def main():
         if optimizer_was_run:
             lr_scheduler.step()
             training_model.setOptimizer(optimizer)
+            
+if __name__ == "__main__":
+    main()
