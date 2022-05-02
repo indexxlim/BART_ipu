@@ -222,7 +222,7 @@ def ipu_dataloader(dataset, tokenizer, ipu_config, args ,collator, shuffle=True)
         "auto_distributed_partitioning": not isinstance(dataset, torch.utils.data.IterableDataset),
         "mode": args.dataloader_mode,
         "worker_init_fn": _WorkerInit(123),
-    }    
+    }
     
     
     
