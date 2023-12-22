@@ -1,4 +1,4 @@
-transformers==4.10.2
+transformers==4.36.0
 datasets>=1.7.0
 tokenizers>=0.10.3
 scipy>=1.5.4
